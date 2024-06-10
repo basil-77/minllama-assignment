@@ -23,6 +23,15 @@ def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor):
     shape = [d if i == 1 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)]
     return freqs_cis.view(shape)
 
+def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0, device='cuda'):
+    freqs = 1.0 / (theta ** (torch.arange(0, dim, 2, device=device)[: (dim // 2)].float() / dim))
+    t = torch.arange(end, device=device)  # type: ignore
+    freqs = torch.outer(t, freqs).float()  # type: ignore
+    freqs_cos = torch.cos(freqs)  # real part
+    freqs_sin = torch.sin(freqs)  # imaginary part
+    return freqs_cos, freqs_sin
+
+
 def apply_rotary_emb(
     query: torch.Tensor,
     key: torch.Tensor,
@@ -63,13 +72,21 @@ def apply_rotary_emb(
 
     # First, compute the trigonometric values in the second and fourth columns in
     # slide 22 (linked above).
+    #freqs_cos, freqs_sin = precompute_freqs_cis(head_dim, max_seq_len, device=device)
+    freqs_cos, freqs_sin = precompute_freqs_cis(head_dim, seqlen, device=device)
+    freqs_cos = reshape_for_broadcast(freqs_cos, query_real)
+    freqs_sin = reshape_for_broadcast(freqs_sin, query_real)
 
     # Then, combine these trigonometric values with the tensors query_real, query_imag,
     # key_real, and key_imag.
 
-    raise NotImplementedError
+    query_real_out = query_real * freqs_cos - query_imag * freqs_sin
+    query_imag_out = query_real * freqs_sin + query_imag * freqs_cos
+    key_real_out = key_real * freqs_cos - key_imag * freqs_sin
+    key_imag_out = key_real * freqs_sin + key_imag * freqs_cos
+    
+    query_out = torch.stack([query_real_out, query_imag_out], dim=-1).flatten(3)
+    key_out = torch.stack([key_real_out, key_imag_out], dim=-1).flatten(3)
 
-    query_out = None
-    key_out = None
     # Return the rotary position embeddings for the query and key tensors
     return query_out, key_out
